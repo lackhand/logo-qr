@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logo-qr"
+version = "0.1.0"
+description = "Generate scannable QR codes with continuous rounded corridors wrapping around arbitrary central SVG or raster logos."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "lackhand" }]
+dependencies = [
+    "numpy>=1.26",
+    "Pillow>=10.0",
+    "opencv-python>=4.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+logo-qr = "logo_qr.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["logo_qr*"]

@@ -1,0 +1,15 @@
+# Compiled Apple Vision CLI binary (rebuilt via `make build-verifier` or automatically in tests)
+bin/
+
+# Python caches & packaging artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.venv/
+
+# OS metadata
+.DS_Store

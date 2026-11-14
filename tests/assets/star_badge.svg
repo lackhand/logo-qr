@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g id="badge-root">
+    <circle cx="32" cy="32" r="28" fill="#38BDF8"/>
+    <circle cx="32" cy="32" r="22" fill="#0284C7"/>
+    <polygon points="32,8 38.5,22.5 54,24 42.2,34.5 45.6,50 32,42 18.4,50 21.8,34.5 10,24 25.5,22.5" fill="#F59E0B"/>
+    <circle cx="32" cy="32" r="7" fill="#EF4444"/>
+  </g>
+</svg>
