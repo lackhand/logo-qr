@@ -1,6 +1,3 @@
-# Compiled Apple Vision CLI binary (rebuilt via `make build-verifier` or automatically in tests)
-bin/
-
 # Python caches & packaging artifacts
 __pycache__/
 *.py[cod]

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "logo-qr"
-version = "0.1.0"
-description = "Generate scannable QR codes with continuous rounded corridors wrapping around arbitrary central SVG or raster logos."
+version = "0.2.0"
+description = "Embed central single or multi-layer SVG and raster logos inside scannable QR codes."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

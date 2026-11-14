@@ -245,7 +245,13 @@ def _prepare_qart_variables(
         while len(bits) % 8 != 0:
             bits.append(0)
         free_start = len(bits)
-        bits.extend([0] * (max_bits - free_start))
+        pad_bytes = (0xEC, 0x11)
+        n_pad_bytes = (max_bits - free_start) // 8
+        for idx in range(n_pad_bytes):
+            pad = pad_bytes[idx & 1]
+            bits.extend((pad >> shift) & 1 for shift in range(7, -1, -1))
+        if len(bits) < max_bits:
+            bits.extend([0] * (max_bits - len(bits)))
         free_indices = list(range(free_start, max_bits))
         return bits, free_indices, url
 

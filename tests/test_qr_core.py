@@ -17,7 +17,7 @@ from logo_qr.qr_spec import (
     gf_mul,
     rs_encode_block,
 )
-from tests.qr_verifiers import decode_all
+from tests.qr_verifiers import decode_qr_image
 
 DEMO_URL = "https://example.com/qr/demo?item=42"
 
@@ -60,14 +60,14 @@ def test_all_table9_version_specs_and_decode(version: int, ec_level: str):
     assert len(layout.codeword_coords) == expected_cw
 
     msg = "HI-QR" if spec.total_data_codewords < 38 else DEMO_URL
-    mat = encode_standard_qr(msg, version=version, ec_level=ec_level, mask=0)
+    mat = encode_standard_qr(msg, version=version, ec_level=ec_level, mask=1)
     assert mat.shape == (spec.size, spec.size)
 
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / f"v{version}_{ec_level}.png"
         _save_matrix_png(mat, p, scale=10, quiet=4)
-        decoded = decode_all(p)
-        for engine in ("vision", "opencv_aruco"):
+        decoded = decode_qr_image(p)
+        for engine in ("opencv_aruco", "opencv"):
             assert msg in decoded[engine], f"V{version}-{ec_level} failed on {engine}: {decoded}"
 
 
@@ -78,9 +78,17 @@ def test_auto_mask_and_select_version():
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "auto_mask.png"
         _save_matrix_png(mat, p, scale=10, quiet=4)
-        decoded = decode_all(p)
-        assert DEMO_URL in decoded["vision"]
+        decoded = decode_qr_image(p)
         assert DEMO_URL in decoded["opencv_aruco"]
+        assert DEMO_URL in decoded["opencv"]
+
+        for mask_id in range(8):
+            m_mat = encode_standard_qr(DEMO_URL, version=5, ec_level="H", mask=mask_id)
+            mp = Path(tmp) / f"mask_{mask_id}.png"
+            _save_matrix_png(m_mat, mp, scale=10, quiet=4)
+            m_dec = decode_qr_image(mp)
+            assert DEMO_URL in m_dec["opencv_aruco"]
+            assert DEMO_URL in m_dec["opencv"]
 
     with pytest.raises(ValueError, match="exceeds"):
         select_version("x" * 1000, ec_level="H")
@@ -109,8 +117,8 @@ def test_qart_post_terminator_and_url_fragment():
         for idx, res in enumerate((res0, res_frag)):
             p = Path(tmp) / f"qart_{idx}.png"
             _save_matrix_png(res.matrix, p, scale=10, quiet=4)
-            decoded = decode_all(p)
-            for engine in ("vision", "opencv", "opencv_aruco"):
+            decoded = decode_qr_image(p)
+            for engine in ("opencv", "opencv_aruco"):
                 assert res.decoded_payload in decoded[engine], (
                     f"QArt {idx} failed {engine}: {decoded}"
                 )

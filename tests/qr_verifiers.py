@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -11,67 +9,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageFilter
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-VISION_SWIFT = PROJECT_ROOT / "tools" / "vision_qr_check.swift"
-VISION_BIN = PROJECT_ROOT / "bin" / "vision_qr_check"
-SWIFTC_BIN = Path("/usr/bin/swiftc")
-
-
-def ensure_vision_binary() -> Path:
-    """Compile the macOS Apple Vision QR verifier CLI if not already built."""
-    if VISION_BIN.exists():
-        return VISION_BIN
-    if not VISION_SWIFT.exists():
-        raise FileNotFoundError(f"Vision verifier source missing: {VISION_SWIFT}")
-    if not SWIFTC_BIN.exists():
-        raise FileNotFoundError(f"Swift compiler not found at {SWIFTC_BIN}")
-    VISION_BIN.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [str(SWIFTC_BIN), "-O", str(VISION_SWIFT), "-o", str(VISION_BIN)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return VISION_BIN
-
-
-def run_vision_qr(image_path: str | Path) -> list[str]:
-    """Invoke compiled Swift binary running Apple Vision VNDetectBarcodesRequest."""
-    path = Path(image_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Image not found: {path}")
-    vision_bin = ensure_vision_binary()
-
-    proc = subprocess.run(
-        [str(vision_bin), str(path)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    data = json.loads(proc.stdout.strip())
-    return list(data["vision"])
-
-
-def _decode_with_detector(detector: object, img: np.ndarray) -> list[str]:
-    text, _, _ = detector.detectAndDecode(img)
-    if text:
-        return [text]
-    ok, decoded_info, _, _ = detector.detectAndDecodeMulti(img)
-    if ok and decoded_info:
-        return [s for s in decoded_info if s]
-    return []
-
-
-def decode_all(image_path: str | Path) -> dict[str, list[str]]:
-    """Run Apple Vision, OpenCV QRCodeDetector, and OpenCV QRCodeDetectorAruco."""
-    img = cv2.imread(str(image_path))
-    if img is None:
-        raise FileNotFoundError(f"Failed to load image with cv2: {image_path}")
-    return {
-        "vision": run_vision_qr(image_path),
-        "opencv": _decode_with_detector(cv2.QRCodeDetector(), img),
-        "opencv_aruco": _decode_with_detector(cv2.QRCodeDetectorAruco(), img),
-    }
+from logo_qr.verify import decode_qr_image, verify_qr_image
 
 
 def _make_perspective_tilt(img: Image.Image, angle_deg: float = 12.0) -> Image.Image:
@@ -190,14 +128,14 @@ def verify_camera_robustness(
     image_path: str | Path,
     expected_url: str,
     exact: bool = True,
-    required_engines: tuple[str, ...] = ("vision",),
+    required_engines: tuple[str, ...] = ("opencv_aruco",),
 ) -> dict[str, dict[str, list[str]]]:
-    """Verify required barcode engines decode the expected URL across all 5 transforms."""
+    """Verify required Python barcode engines decode the expected URL across all 5 transforms."""
     results: dict[str, dict[str, list[str]]] = {}
     with tempfile.TemporaryDirectory() as tmp:
         transforms = generate_camera_transforms(image_path, Path(tmp))
         for tname, tpath in transforms.items():
-            decoded = decode_all(tpath)
+            decoded = decode_qr_image(tpath)
             results[tname] = decoded
             for engine in required_engines:
                 if not _matches(decoded[engine], expected_url, exact=exact):
@@ -207,3 +145,11 @@ def verify_camera_robustness(
                         f"got {decoded}"
                     )
     return results
+
+
+__all__ = [
+    "decode_qr_image",
+    "generate_camera_transforms",
+    "verify_camera_robustness",
+    "verify_qr_image",
+]

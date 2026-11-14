@@ -1,16 +1,20 @@
-"""Validated color palette, placement, and layout presets for logo-centered QR codes."""
+"""Validated color palette, 2D affine transforms, and CSS/SVG-style multi-layer composition."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import re
 from typing import Sequence
 
 VALID_EC_LEVELS = frozenset({"L", "M", "Q", "H"})
 SUPPORTED_LOGO_SUFFIXES = frozenset({".svg", ".png", ".webp"})
-VALID_LAYOUT_MODES = frozenset({"single", "duo-cozy", "duo-splayed", "duo-chamber"})
 _HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+_LAYER_HEADER_RE = re.compile(r"^\s*(\d+)\s*:\s*(.+?)\s*$")
+_TOKEN_RE = re.compile(r"([A-Za-z][A-Za-z0-9-]*)\s*\(([^()]*)\)")
+_FLOAT_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+_ANGLE_RE = re.compile(r"^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)(turn|deg|rad)$")
 
 
 def parse_hex_rgb(hex_color: str, field_name: str = "color") -> tuple[int, int, int]:
@@ -32,87 +36,153 @@ def bt601_luma(rgb: tuple[int, int, int]) -> float:
 
 @dataclass(frozen=True)
 class QRPalette:
-    """Contrast-validated palette for QR corridors, accents, quiet zone, and optional frame."""
+    """Contrast-validated two-tone QR module palette."""
 
-    wall_color: str = "#1E293B"
-    accent_color: str | None = "#0F172A"
-    background_color: str = "#FFFFFF"
-    frame_color: str | None = None
+    dark_color: str = "#1E293B"
+    light_color: str = "#FFFFFF"
 
     def __post_init__(self) -> None:
-        wall_rgb = parse_hex_rgb(self.wall_color, "wall_color")
-        object.__setattr__(self, "wall_color", self.wall_color.upper())
+        dark_rgb = parse_hex_rgb(self.dark_color, "dark_color")
+        object.__setattr__(self, "dark_color", self.dark_color.upper())
 
-        bg_rgb = parse_hex_rgb(self.background_color, "background_color")
-        object.__setattr__(self, "background_color", self.background_color.upper())
+        light_rgb = parse_hex_rgb(self.light_color, "light_color")
+        object.__setattr__(self, "light_color", self.light_color.upper())
 
-        wall_y = bt601_luma(wall_rgb)
-        if wall_y > 0.20:
+        dark_y = bt601_luma(dark_rgb)
+        if dark_y > 0.20:
             raise ValueError(
-                f"wall_color {self.wall_color} has BT.601 luma {wall_y:.3f} > 0.20 (must be dark for reliable scanning)"
+                f"dark_color {self.dark_color} has BT.601 luma {dark_y:.3f} > 0.20 (must be dark for reliable scanning)"
             )
 
-        max_dark_y = wall_y
-        if self.accent_color is not None:
-            accent_rgb = parse_hex_rgb(self.accent_color, "accent_color")
-            object.__setattr__(self, "accent_color", self.accent_color.upper())
-            accent_y = bt601_luma(accent_rgb)
-            if accent_y > 0.20:
-                raise ValueError(
-                    f"accent_color {self.accent_color} has BT.601 luma {accent_y:.3f} > 0.20"
-                )
-            max_dark_y = max(max_dark_y, accent_y)
-
-        bg_y = bt601_luma(bg_rgb)
-        if bg_y < 0.85:
+        light_y = bt601_luma(light_rgb)
+        if light_y < 0.85:
             raise ValueError(
-                f"background_color {self.background_color} has BT.601 luma {bg_y:.3f} < 0.85 (must be light)"
+                f"light_color {self.light_color} has BT.601 luma {light_y:.3f} < 0.85 (must be light)"
             )
 
-        delta_y = bg_y - max_dark_y
+        delta_y = light_y - dark_y
         if delta_y < 0.65:
             raise ValueError(
-                f"QR contrast separation delta_y={delta_y:.3f} < 0.65 between {self.background_color} and dark modules"
+                f"QR contrast separation delta_y={delta_y:.3f} < 0.65 between {self.light_color} and {self.dark_color}"
             )
 
-        if self.frame_color is not None:
-            parse_hex_rgb(self.frame_color, "frame_color")
-            object.__setattr__(self, "frame_color", self.frame_color.upper())
+    @property
+    def dark_rgb(self) -> tuple[int, int, int]:
+        return parse_hex_rgb(self.dark_color, "dark_color")
 
     @property
-    def wall_rgb(self) -> tuple[int, int, int]:
-        return parse_hex_rgb(self.wall_color, "wall_color")
-
-    @property
-    def accent_rgb(self) -> tuple[int, int, int]:
-        hex_val = self.accent_color if self.accent_color is not None else self.wall_color
-        return parse_hex_rgb(hex_val, "accent_color")
-
-    @property
-    def accent_hex(self) -> str:
-        return self.accent_color if self.accent_color is not None else self.wall_color
-
-    @property
-    def background_rgb(self) -> tuple[int, int, int]:
-        return parse_hex_rgb(self.background_color, "background_color")
-
-    @property
-    def frame_rgb(self) -> tuple[int, int, int] | None:
-        if self.frame_color is None:
-            return None
-        return parse_hex_rgb(self.frame_color, "frame_color")
+    def light_rgb(self) -> tuple[int, int, int]:
+        return parse_hex_rgb(self.light_color, "light_color")
 
 
 @dataclass(frozen=True)
-class LogoPlacement:
-    """Single logo placement inside the QR matrix (clockwise-positive angles)."""
+class Affine2D:
+    """2D homogeneous affine matrix matching SVG matrix(a, b, c, d, tx, ty) in QR module units."""
+
+    a: float = 1.0
+    b: float = 0.0
+    c: float = 0.0
+    d: float = 1.0
+    tx: float = 0.0
+    ty: float = 0.0
+
+    def __post_init__(self) -> None:
+        for name in ("a", "b", "c", "d", "tx", "ty"):
+            val = float(getattr(self, name))
+            if not math.isfinite(val):
+                raise ValueError(f"Affine2D component {name} must be finite, got {val!r}")
+            object.__setattr__(self, name, val)
+        if self.det <= 1e-6:
+            raise ValueError(
+                f"Affine2D determinant must be > 1e-6 (non-degenerate, orientation-preserving), got {self.det}"
+            )
+
+    @property
+    def det(self) -> float:
+        return self.a * self.d - self.b * self.c
+
+    @property
+    def max_scale(self) -> float:
+        """Largest singular value of the linear 2x2 submatrix."""
+        s_plus = math.hypot(self.a + self.d, self.b - self.c)
+        s_minus = math.hypot(self.a - self.d, self.b + self.c)
+        return 0.5 * (s_plus + s_minus)
+
+    @classmethod
+    def identity(cls) -> Affine2D:
+        return cls()
+
+    @classmethod
+    def translate(cls, dx: float, dy: float = 0.0) -> Affine2D:
+        dx_f = float(dx)
+        dy_f = float(dy)
+        if not math.isfinite(dx_f) or not (-30.0 <= dx_f <= 30.0):
+            raise ValueError(f"Translation tx must be finite in [-30.0, 30.0], got {dx!r}")
+        if not math.isfinite(dy_f) or not (-30.0 <= dy_f <= 30.0):
+            raise ValueError(f"Translation ty must be finite in [-30.0, 30.0], got {dy!r}")
+        return cls(a=1.0, b=0.0, c=0.0, d=1.0, tx=dx_f, ty=dy_f)
+
+    @classmethod
+    def rotate_deg(cls, deg: float) -> Affine2D:
+        deg_f = float(deg)
+        if not math.isfinite(deg_f):
+            raise ValueError(f"Rotation angle must be finite, got {deg!r}")
+        rad = math.radians(deg_f)
+        ca = math.cos(rad)
+        sa = math.sin(rad)
+        return cls(a=ca, b=sa, c=-sa, d=ca, tx=0.0, ty=0.0)
+
+    @classmethod
+    def rotate_turn(cls, turns: float) -> Affine2D:
+        turns_f = float(turns)
+        if not math.isfinite(turns_f):
+            raise ValueError(f"Rotation turns must be finite, got {turns!r}")
+        return cls.rotate_deg(turns_f * 360.0)
+
+    @classmethod
+    def rotate_rad(cls, rad: float) -> Affine2D:
+        rad_f = float(rad)
+        if not math.isfinite(rad_f):
+            raise ValueError(f"Rotation radians must be finite, got {rad!r}")
+        return cls.rotate_deg(math.degrees(rad_f))
+
+    @classmethod
+    def scale(cls, sx: float, sy: float | None = None) -> Affine2D:
+        sx_f = float(sx)
+        sy_f = sx_f if sy is None else float(sy)
+        if not math.isfinite(sx_f) or not (0.10 <= sx_f <= 4.0):
+            raise ValueError(f"scale sx must be finite in [0.10, 4.0], got {sx!r}")
+        if not math.isfinite(sy_f) or not (0.10 <= sy_f <= 4.0):
+            raise ValueError(f"scale sy must be finite in [0.10, 4.0], got {sy!r}")
+        return cls(a=sx_f, b=0.0, c=0.0, d=sy_f, tx=0.0, ty=0.0)
+
+    def __matmul__(self, other: Affine2D) -> Affine2D:
+        if not isinstance(other, Affine2D):
+            return NotImplemented
+        return Affine2D(
+            a=self.a * other.a + self.c * other.b,
+            b=self.b * other.a + self.d * other.b,
+            c=self.a * other.c + self.c * other.d,
+            d=self.b * other.c + self.d * other.d,
+            tx=self.a * other.tx + self.c * other.ty + self.tx,
+            ty=self.b * other.tx + self.d * other.ty + self.ty,
+        )
+
+    def apply(self, x: float, y: float) -> tuple[float, float]:
+        """Transform point (x, y) from layer-local coordinates into QR-center module coordinates."""
+        return (
+            self.a * x + self.c * y + self.tx,
+            self.b * x + self.d * y + self.ty,
+        )
+
+
+@dataclass(frozen=True)
+class LogoLayer:
+    """Single logo layer with an ordered 2D affine transform and optional die-cut rim."""
 
     logo_path: Path | str
-    dx_frac: float = 0.0
-    dy_frac: float = 0.0
-    scale_frac: float = 0.34
-    angle_deg: float = 0.0
-    rim_mod: float = 0.0
+    transform: Affine2D = Affine2D()
+    die_cut_mod: float = 0.0
 
     def __post_init__(self) -> None:
         path = Path(self.logo_path)
@@ -124,35 +194,180 @@ class LogoPlacement:
             )
         object.__setattr__(self, "logo_path", path)
 
-        if not (0.05 <= self.scale_frac <= 0.70):
-            raise ValueError(f"scale_frac must be in [0.05, 0.70], got {self.scale_frac}")
-        if not (-90.0 <= self.angle_deg <= 90.0):
-            raise ValueError(f"angle_deg must be in [-90, 90], got {self.angle_deg}")
-        if not (-0.45 <= self.dx_frac <= 0.45):
-            raise ValueError(f"dx_frac must be in [-0.45, 0.45], got {self.dx_frac}")
-        if not (-0.45 <= self.dy_frac <= 0.45):
-            raise ValueError(f"dy_frac must be in [-0.45, 0.45], got {self.dy_frac}")
-        if not (0.0 <= self.rim_mod <= 2.5):
-            raise ValueError(f"rim_mod must be in [0.0, 2.5], got {self.rim_mod}")
+        if not isinstance(self.transform, Affine2D):
+            raise ValueError(f"transform must be an Affine2D instance, got {type(self.transform).__name__}")
+        if not (0.10 <= self.transform.max_scale <= 4.0):
+            raise ValueError(
+                f"Composed layer scale {self.transform.max_scale:.3f} must be in [0.10, 4.0]"
+            )
+        if not (-30.0 <= self.transform.tx <= 30.0):
+            raise ValueError(f"Layer translation tx must be in [-30.0, 30.0], got {self.transform.tx}")
+        if not (-30.0 <= self.transform.ty <= 30.0):
+            raise ValueError(f"Layer translation ty must be in [-30.0, 30.0], got {self.transform.ty}")
+
+        dc = float(self.die_cut_mod)
+        if not math.isfinite(dc) or not (0.0 <= dc <= 3.0):
+            raise ValueError(f"die_cut_mod must be finite in [0.0, 3.0], got {self.die_cut_mod!r}")
+        object.__setattr__(self, "die_cut_mod", dc)
+
+
+def _parse_unitless_float(raw: str, fn_name: str) -> float:
+    token = raw.strip()
+    if not _FLOAT_RE.match(token):
+        raise ValueError(
+            f"{fn_name}() expects unitless QR-module numbers (no 'px', '%', or unit suffixes), got {token!r}"
+        )
+    val = float(token)
+    if not math.isfinite(val):
+        raise ValueError(f"{fn_name}() argument must be finite, got {token!r}")
+    return val
+
+
+def _parse_css_angle_deg(raw: str) -> float:
+    token = raw.strip()
+    m = _ANGLE_RE.match(token)
+    if not m:
+        raise ValueError(
+            f"rotate() requires an explicit angle unit ('turn', 'deg', or 'rad'), got {token!r}"
+        )
+    value = float(m.group(1))
+    unit = m.group(2)
+    if not math.isfinite(value):
+        raise ValueError(f"rotate() angle must be finite, got {token!r}")
+    if unit == "turn":
+        return value * 360.0
+    if unit == "deg":
+        return value
+    return math.degrees(value)
+
+
+def _split_fn_args(arg_str: str) -> list[str]:
+    stripped = arg_str.strip()
+    if not stripped:
+        return []
+    parts = [part.strip() for part in stripped.split(",")]
+    if any(not p for p in parts):
+        raise ValueError(f"Malformed empty argument in {arg_str!r}")
+    return parts
+
+
+def parse_layer_spec(spec: str) -> tuple[int, Affine2D, float]:
+    """Parse '<idx>: <css/svg ops>' into (layer_index, Affine2D, die_cut_mod)."""
+    if not isinstance(spec, str):
+        raise ValueError(f"Layer spec must be a string, got {type(spec).__name__}")
+    header_m = _LAYER_HEADER_RE.match(spec)
+    if not header_m:
+        raise ValueError(
+            f"Layer spec must begin with '<index>: <operations>', got {spec!r}"
+        )
+
+    layer_idx = int(header_m.group(1))
+    body = header_m.group(2).strip()
+
+    transform = Affine2D.identity()
+    die_cut_mod: float | None = None
+    pos = 0
+    op_count = 0
+    length = len(body)
+
+    while pos < length:
+        if body[pos].isspace():
+            pos += 1
+            continue
+        tok_m = _TOKEN_RE.match(body, pos)
+        if not tok_m:
+            raise ValueError(
+                f"Invalid token near {body[pos:]!r} in layer spec {spec!r}"
+            )
+        fn_name = tok_m.group(1)
+        args = _split_fn_args(tok_m.group(2))
+        op_count += 1
+        pos = tok_m.end()
+
+        if fn_name == "translate":
+            if len(args) not in (1, 2):
+                raise ValueError(f"translate() expects 1 or 2 arguments, got {len(args)}")
+            dx = _parse_unitless_float(args[0], "translate")
+            dy = 0.0 if len(args) == 1 else _parse_unitless_float(args[1], "translate")
+            transform = transform @ Affine2D.translate(dx, dy)
+        elif fn_name == "translateX":
+            if len(args) != 1:
+                raise ValueError(f"translateX() expects 1 argument, got {len(args)}")
+            dx = _parse_unitless_float(args[0], "translateX")
+            transform = transform @ Affine2D.translate(dx, 0.0)
+        elif fn_name == "translateY":
+            if len(args) != 1:
+                raise ValueError(f"translateY() expects 1 argument, got {len(args)}")
+            dy = _parse_unitless_float(args[0], "translateY")
+            transform = transform @ Affine2D.translate(0.0, dy)
+        elif fn_name == "rotate":
+            if len(args) != 1:
+                raise ValueError(f"rotate() expects 1 argument, got {len(args)}")
+            deg = _parse_css_angle_deg(args[0])
+            transform = transform @ Affine2D.rotate_deg(deg)
+        elif fn_name == "scale":
+            if len(args) not in (1, 2):
+                raise ValueError(f"scale() expects 1 or 2 arguments, got {len(args)}")
+            sx = _parse_unitless_float(args[0], "scale")
+            sy = None if len(args) == 1 else _parse_unitless_float(args[1], "scale")
+            transform = transform @ Affine2D.scale(sx, sy)
+        elif fn_name == "die-cut":
+            if die_cut_mod is not None:
+                raise ValueError(f"Duplicate die-cut() operation in layer spec {spec!r}")
+            if len(args) != 1:
+                raise ValueError(f"die-cut() expects 1 argument, got {len(args)}")
+            dc = _parse_unitless_float(args[0], "die-cut")
+            if not (0.0 <= dc <= 3.0):
+                raise ValueError(f"die-cut() width must be in [0.0, 3.0], got {dc}")
+            die_cut_mod = dc
+        else:
+            raise ValueError(
+                f"Unsupported layer operation {fn_name!r}; expected one of "
+                "translate, translateX, translateY, rotate, scale, die-cut"
+            )
+
+    if op_count == 0:
+        raise ValueError(f"Empty layer spec {spec!r}: expected transform or die-cut operation")
+    return layer_idx, transform, (0.0 if die_cut_mod is None else die_cut_mod)
+
+
+def build_layers(
+    logos: Sequence[Path | str], layer_specs: Sequence[str] = ()
+) -> tuple[LogoLayer, ...]:
+    """Compose centered ordered LogoLayers from --logo paths and optional --layer overrides."""
+    if not logos:
+        raise ValueError("At least one logo path is required")
+
+    specs_by_idx: dict[int, tuple[Affine2D, float]] = {}
+    for spec in layer_specs:
+        idx, transform, die_cut_mod = parse_layer_spec(spec)
+        if idx >= len(logos):
+            raise ValueError(
+                f"Invalid layer index {idx}: out of range for {len(logos)} logo(s) (valid: 0..{len(logos) - 1})"
+            )
+        if idx in specs_by_idx:
+            raise ValueError(f"Duplicate --layer specification for layer index {idx}")
+        specs_by_idx[idx] = (transform, die_cut_mod)
+
+    layers: list[LogoLayer] = []
+    for idx, logo_path in enumerate(logos):
+        transform, die_cut_mod = specs_by_idx.get(idx, (Affine2D.identity(), 0.0))
+        layers.append(LogoLayer(logo_path=logo_path, transform=transform, die_cut_mod=die_cut_mod))
+    return tuple(layers)
 
 
 @dataclass(frozen=True)
 class LogoQRDesign:
-    """Full configuration for rendering a logo-centered QR code."""
+    """Full configuration for rendering a crisp square QR code around layered logos."""
 
     version: int | None = None
     ec_level: str = "H"
-    placements: tuple[LogoPlacement, ...] = ()
+    layers: tuple[LogoLayer, ...] = ()
     palette: QRPalette = QRPalette()
-    halo_pad_mod: float = 0.65
-    frame_mod: float = 0.0
-    chamber_radius_frac: float = 0.0
-    chamber_door_half_deg: float = 22.0
+    base_scale_frac: float = 0.34
+    halo_mod: float = 0.65
     module_px: int = 24
     quiet_mod: int = 4
-    wall_radius_frac: float = 0.44
-    finder_outer_radius_frac: float = 0.85
-    use_run_dots: bool = True
 
     def __post_init__(self) -> None:
         if self.version is not None and not (4 <= self.version <= 14):
@@ -163,112 +378,13 @@ class LogoQRDesign:
                 f"ec_level must be one of {sorted(VALID_EC_LEVELS)}, got {self.ec_level!r}"
             )
         object.__setattr__(self, "ec_level", ec)
-        if not self.placements:
-            raise ValueError("placements must contain at least one LogoPlacement")
-        if not (0.0 <= self.halo_pad_mod <= 3.0):
-            raise ValueError(f"halo_pad_mod must be in [0.0, 3.0], got {self.halo_pad_mod}")
-        if not (0.0 <= self.frame_mod <= 4.0):
-            raise ValueError(f"frame_mod must be in [0.0, 4.0], got {self.frame_mod}")
-        if self.frame_mod > 0.0 and self.palette.frame_color is None:
-            raise ValueError("frame_mod > 0 requires palette.frame_color to be set")
-        if not (0.0 <= self.chamber_radius_frac <= 0.35):
-            raise ValueError(
-                f"chamber_radius_frac must be in [0.0, 0.35], got {self.chamber_radius_frac}"
-            )
+        if not self.layers:
+            raise ValueError("layers must contain at least one LogoLayer")
+        if not (0.05 <= self.base_scale_frac <= 0.60):
+            raise ValueError(f"base_scale_frac must be in [0.05, 0.60], got {self.base_scale_frac}")
+        if not (0.0 <= self.halo_mod <= 3.0):
+            raise ValueError(f"halo_mod must be in [0.0, 3.0], got {self.halo_mod}")
         if self.module_px < 8:
             raise ValueError(f"module_px must be >= 8, got {self.module_px}")
         if self.quiet_mod < 4:
             raise ValueError(f"quiet_mod must be >= 4 for ISO compliance, got {self.quiet_mod}")
-        if not (0.30 <= self.wall_radius_frac <= 0.50):
-            raise ValueError(f"wall_radius_frac must be in [0.30, 0.50], got {self.wall_radius_frac}")
-        if not (0.0 <= self.finder_outer_radius_frac <= 2.5):
-            raise ValueError(
-                f"finder_outer_radius_frac must be in [0.0, 2.5], got {self.finder_outer_radius_frac}"
-            )
-
-
-def build_layout_placements(
-    logos: Sequence[Path | str],
-    layout_mode: str,
-    scale_frac: float | None = None,
-    angle_deg: float | None = None,
-) -> tuple[tuple[LogoPlacement, ...], float]:
-    """Construct placements and chamber_radius_frac for standard single/duo presets."""
-    if not logos:
-        raise ValueError("At least one logo path is required")
-    if layout_mode not in VALID_LAYOUT_MODES:
-        raise ValueError(
-            f"Unsupported layout mode {layout_mode!r}; expected one of {sorted(VALID_LAYOUT_MODES)}"
-        )
-
-    if layout_mode == "single":
-        if len(logos) != 1:
-            raise ValueError(f"single layout accepts exactly 1 logo path, got {len(logos)}")
-        scale = 0.35 if scale_frac is None else scale_frac
-        angle = 0.0 if angle_deg is None else angle_deg
-        return (
-            (LogoPlacement(logo_path=logos[0], scale_frac=scale, angle_deg=angle),),
-            0.0,
-        )
-
-    if len(logos) > 2:
-        raise ValueError(f"{layout_mode} layout accepts at most 2 logo paths, got {len(logos)}")
-    first = logos[0]
-    second = logos[1] if len(logos) == 2 else logos[0]
-
-    if layout_mode == "duo-cozy":
-        base_scale = 0.295 if scale_frac is None else scale_frac
-        ang_l = -18.0 if angle_deg is None else -abs(angle_deg)
-        ang_r = 22.0 if angle_deg is None else abs(angle_deg)
-        return (
-            (
-                LogoPlacement(logo_path=first, dx_frac=-0.060, dy_frac=-0.010, scale_frac=base_scale, angle_deg=ang_l),
-                LogoPlacement(
-                    logo_path=second,
-                    dx_frac=0.058,
-                    dy_frac=0.022,
-                    scale_frac=min(0.70, base_scale + 0.010),
-                    angle_deg=ang_r,
-                    rim_mod=0.55,
-                ),
-            ),
-            0.0,
-        )
-
-    if layout_mode == "duo-splayed":
-        base_scale = 0.295 if scale_frac is None else scale_frac
-        ang_l = -34.0 if angle_deg is None else -abs(angle_deg)
-        ang_r = 36.0 if angle_deg is None else abs(angle_deg)
-        return (
-            (
-                LogoPlacement(logo_path=first, dx_frac=-0.072, dy_frac=0.015, scale_frac=base_scale, angle_deg=ang_l),
-                LogoPlacement(
-                    logo_path=second,
-                    dx_frac=0.070,
-                    dy_frac=-0.012,
-                    scale_frac=min(0.70, base_scale + 0.010),
-                    angle_deg=ang_r,
-                    rim_mod=0.55,
-                ),
-            ),
-            0.0,
-        )
-
-    # duo-chamber
-    base_scale = 0.242 if scale_frac is None else scale_frac
-    ang_l = -24.0 if angle_deg is None else -abs(angle_deg)
-    ang_r = 28.0 if angle_deg is None else abs(angle_deg)
-    return (
-        (
-            LogoPlacement(logo_path=first, dx_frac=-0.048, dy_frac=0.010, scale_frac=base_scale, angle_deg=ang_l),
-            LogoPlacement(
-                logo_path=second,
-                dx_frac=0.048,
-                dy_frac=0.022,
-                scale_frac=min(0.70, base_scale + 0.008),
-                angle_deg=ang_r,
-                rim_mod=0.50,
-            ),
-        ),
-        0.212,
-    )
